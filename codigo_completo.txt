@@ -1,0 +1,919 @@
+﻿===== ARCHIVO: \app\src\androidTest\java\com\hfad\odometro_laboratorio\ExampleInstrumentedTest.java =====
+package com.hfad.odometro_laboratorio;
+
+import android.content.Context;
+
+import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import static org.junit.Assert.*;
+
+/**
+ * Instrumented test, which will execute on an Android device.
+ *
+ * @see <a href="http://d.android.com/tools/testing">Testing documentation</a>
+ */
+@RunWith(AndroidJUnit4.class)
+public class ExampleInstrumentedTest {
+    @Test
+    public void useAppContext() {
+        // Context of the app under test.
+        Context appContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        assertEquals("com.hfad.odometro_laboratorio", appContext.getPackageName());
+    }
+}
+
+===== ARCHIVO: \app\src\main\java\com\hfad\odometro_laboratorio\MainActivity.java =====
+package com.hfad.odometro_laboratorio;
+
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
+import android.content.pm.PackageManager;
+import android.location.Location;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Looper;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+
+public class MainActivity extends AppCompatActivity {
+
+    private static final int PERMISSION_REQUEST_CODE = 698;
+
+    private OdometerService odometer;
+    private boolean bound = false;
+    private TrackDbHelper db;
+
+    private EditText etEstudiante, etPrecision, etSegundos;
+    private TextView tvUbicacion, tvDistancia, tvReporte;
+
+    private final ServiceConnection connection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder binder) {
+            odometer = ((OdometerService.OdometerBinder) binder).getOdometer();
+            bound = true;
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            bound = false;
+        }
+    };
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        db = new TrackDbHelper(this);
+        etEstudiante = findViewById(R.id.etEstudiante);
+        etPrecision = findViewById(R.id.etPrecision);
+        etSegundos = findViewById(R.id.etSegundos);
+        tvUbicacion = findViewById(R.id.tvUbicacion);
+        tvDistancia = findViewById(R.id.tvDistancia);
+        tvReporte = findViewById(R.id.tvReporte);
+
+        Button btnIniciar = findViewById(R.id.btnIniciar);
+        Button btnDetener = findViewById(R.id.btnDetener);
+        Button btnReporte = findViewById(R.id.btnReporte);
+
+        btnIniciar.setOnClickListener(v -> iniciar());
+        btnDetener.setOnClickListener(v -> detenerYGuardar());
+        btnReporte.setOnClickListener(v -> tvReporte.setText(db.reporte()));
+
+        displayDistance();
+    }
+
+    private void iniciar() {
+        if (!bound) {
+            Toast.makeText(this, "Servicio no enlazado (Â¿permiso de ubicaciÃ³n?)",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        float precision;
+        long segundos;
+        try {
+            precision = Float.parseFloat(etPrecision.getText().toString().trim());
+            segundos = Long.parseLong(etSegundos.getText().toString().trim());
+        } catch (NumberFormatException e) {
+            Toast.makeText(this, "Ingrese precisiÃ³n (m) y tiempo (s) vÃ¡lidos",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        odometer.resetDistance();
+        if (!odometer.startTracking(segundos, precision)) {
+            Toast.makeText(this, "No se pudo iniciar: revise permiso y GPS",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void detenerYGuardar() {
+        if (!bound || !odometer.isTracking()) return;
+        odometer.stopTracking();
+
+        Location loc = odometer.getCurrentLocation();
+        String estudiante = etEstudiante.getText().toString().trim();
+        if (estudiante.isEmpty()) estudiante = "sin_nombre";
+        String fecha = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault())
+                .format(new Date());
+
+        db.insertar(estudiante, fecha, odometer.getDistance(),
+                Float.parseFloat(etPrecision.getText().toString().trim()),
+                Long.parseLong(etSegundos.getText().toString().trim()),
+                loc != null ? loc.getLatitude() : 0,
+                loc != null ? loc.getLongitude() : 0);
+
+        Toast.makeText(this, "Recorrido guardado", Toast.LENGTH_SHORT).show();
+        tvReporte.setText(db.reporte());
+    }
+
+    /** Actualiza la UI cada segundo con los datos del servicio. */
+    private void displayDistance() {
+        final Handler handler = new Handler(Looper.getMainLooper());
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                double distance = 0.0;
+                if (bound && odometer != null) {
+                    distance = odometer.getDistance();
+                    Location loc = odometer.getCurrentLocation();
+                    if (loc != null) {
+                        tvUbicacion.setText(String.format(Locale.getDefault(),
+                                "UbicaciÃ³n actual: %.6f, %.6f",
+                                loc.getLatitude(), loc.getLongitude()));
+                    }
+                }
+                tvDistancia.setText(String.format(Locale.getDefault(),
+                        "%,.1f metros", distance));
+                handler.postDelayed(this, 1000);
+            }
+        });
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        if (ContextCompat.checkSelfPermission(this, OdometerService.PERMISSION_STRING)
+                != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this,
+                    new String[]{OdometerService.PERMISSION_STRING,
+                            android.Manifest.permission.ACCESS_COARSE_LOCATION},
+                    PERMISSION_REQUEST_CODE);
+        } else {
+            bindOdometer();
+        }
+    }
+
+    private void bindOdometer() {
+        Intent intent = new Intent(this, OdometerService.class);
+        bindService(intent, connection, Context.BIND_AUTO_CREATE);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                           int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            if (grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                bindOdometer();
+            } else {
+                Toast.makeText(this, "Se requiere permiso de ubicaciÃ³n",
+                        Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (bound) {
+            unbindService(connection);
+            bound = false;
+        }
+    }
+}
+
+
+===== ARCHIVO: \app\src\main\java\com\hfad\odometro_laboratorio\OdometerService.java =====
+package com.hfad.odometro_laboratorio;
+
+import android.app.Service;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
+import android.os.Binder;
+import android.os.Bundle;
+import android.os.IBinder;
+import android.os.Looper;
+
+import androidx.core.content.ContextCompat;
+
+/** Bound service: calcula la distancia recorrida (metros) usando el GPS. */
+public class OdometerService extends Service {
+
+    public static final String PERMISSION_STRING =
+            android.Manifest.permission.ACCESS_FINE_LOCATION;
+
+    private final IBinder binder = new OdometerBinder();
+    private LocationManager locManager;
+    private LocationListener listener;
+
+    private static double distanceInMeters = 0;
+    private static Location lastLocation = null;
+    private static Location currentLocation = null;
+    private boolean tracking = false;
+
+    public class OdometerBinder extends Binder {
+        OdometerService getOdometer() {
+            return OdometerService.this;
+        }
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return binder;
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        locManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        listener = new LocationListener() {
+            @Override
+            public void onLocationChanged(Location location) {
+                if (lastLocation != null) {
+                    distanceInMeters += location.distanceTo(lastLocation);
+                }
+                lastLocation = location;
+                currentLocation = location;
+            }
+
+            @Override public void onProviderDisabled(String provider) {}
+            @Override public void onProviderEnabled(String provider) {}
+            @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
+        };
+    }
+
+    /**
+     * Inicia las actualizaciones de ubicaciÃ³n fijando el GPS_PROVIDER explÃ­citamente.
+     */
+    public boolean startTracking(long seconds, float meters) {
+        if (ContextCompat.checkSelfPermission(this, PERMISSION_STRING)
+                != PackageManager.PERMISSION_GRANTED) {
+            return false;
+        }
+        stopTracking();
+
+        // Forzar el proveedor GPS del emulador en lugar de getBestProvider
+        String provider = LocationManager.GPS_PROVIDER;
+        if (locManager == null || !locManager.isProviderEnabled(provider)) {
+            provider = LocationManager.NETWORK_PROVIDER;
+        }
+
+        // Obtener la posiciÃ³n actual de partida
+        Location last = locManager.getLastKnownLocation(provider);
+        if (last != null) {
+            currentLocation = last;
+            lastLocation = last;
+        }
+
+        try {
+            // Escuchar actualizaciones garantizando el Looper principal
+            locManager.requestLocationUpdates(
+                    provider,
+                    seconds * 1000L,
+                    meters,
+                    listener,
+                    Looper.getMainLooper()
+            );
+            tracking = true;
+            return true;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    public void stopTracking() {
+        if (tracking && locManager != null && listener != null
+                && ContextCompat.checkSelfPermission(this, PERMISSION_STRING)
+                == PackageManager.PERMISSION_GRANTED) {
+            locManager.removeUpdates(listener);
+        }
+        tracking = false;
+    }
+
+    public void resetDistance() {
+        distanceInMeters = 0;
+        lastLocation = currentLocation;
+    }
+
+    public boolean isTracking() { return tracking; }
+
+    public double getDistance() { return distanceInMeters; }
+
+    public Location getCurrentLocation() { return currentLocation; }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        stopTracking();
+        locManager = null;
+        listener = null;
+    }
+}
+
+===== ARCHIVO: \app\src\main\java\com\hfad\odometro_laboratorio\TrackDbHelper.java =====
+package com.hfad.odometro_laboratorio;
+
+import android.content.ContentValues;
+import android.content.Context;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteOpenHelper;
+
+/** Persistencia (SQLite) de los recorridos para el reporte consolidado. */
+public class TrackDbHelper extends SQLiteOpenHelper {
+
+    private static final String DB_NAME = "odometro.db";
+    private static final int DB_VERSION = 1;
+
+    public TrackDbHelper(Context context) {
+        super(context, DB_NAME, null, DB_VERSION);
+    }
+
+    @Override
+    public void onCreate(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE recorrido (" +
+                "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                "estudiante TEXT," +
+                "fecha TEXT," +
+                "distancia_m REAL," +
+                "precision_m REAL," +
+                "intervalo_s INTEGER," +
+                "latitud REAL," +
+                "longitud REAL)");
+    }
+
+    @Override
+    public void onUpgrade(SQLiteDatabase db, int oldV, int newV) {
+        db.execSQL("DROP TABLE IF EXISTS recorrido");
+        onCreate(db);
+    }
+
+    public void insertar(String estudiante, String fecha, double distancia,
+                         float precision, long intervalo, double lat, double lon) {
+        ContentValues v = new ContentValues();
+        v.put("estudiante", estudiante);
+        v.put("fecha", fecha);
+        v.put("distancia_m", distancia);
+        v.put("precision_m", precision);
+        v.put("intervalo_s", intervalo);
+        v.put("latitud", lat);
+        v.put("longitud", lon);
+        getWritableDatabase().insert("recorrido", null, v);
+    }
+
+    /** Reporte consolidado: lista de recorridos + total por estudiante. */
+    public String reporte() {
+        StringBuilder sb = new StringBuilder();
+        SQLiteDatabase db = getReadableDatabase();
+
+        Cursor c = db.rawQuery("SELECT estudiante, fecha, distancia_m, precision_m, intervalo_s " +
+                "FROM recorrido ORDER BY id DESC", null);
+        while (c.moveToNext()) {
+            sb.append(String.format("%s | %s | %.1f m (prec %.0f m, c/%d s)\n",
+                    c.getString(0), c.getString(1), c.getDouble(2),
+                    c.getDouble(3), c.getLong(4)));
+        }
+        c.close();
+
+        sb.append("\n--- TOTAL POR ESTUDIANTE ---\n");
+        Cursor t = db.rawQuery("SELECT estudiante, COUNT(*), SUM(distancia_m) " +
+                "FROM recorrido GROUP BY estudiante", null);
+        while (t.moveToNext()) {
+            sb.append(String.format("%s: %d recorridos, %.1f m en total\n",
+                    t.getString(0), t.getInt(1), t.getDouble(2)));
+        }
+        t.close();
+        return sb.toString();
+    }
+}
+
+
+===== ARCHIVO: \app\src\main\res\drawable\ic_launcher_background.xml =====
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#3DDC84"
+        android:pathData="M0,0h108v108h-108z" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M9,0L9,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,0L19,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M29,0L29,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M39,0L39,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M49,0L49,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M59,0L59,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M69,0L69,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M79,0L79,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M89,0L89,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M99,0L99,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,9L108,9"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,19L108,19"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,29L108,29"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,39L108,39"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,49L108,49"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,59L108,59"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,69L108,69"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,79L108,79"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,89L108,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,99L108,99"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,29L89,29"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,39L89,39"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,49L89,49"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,59L89,59"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,69L89,69"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,79L89,79"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M29,19L29,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M39,19L39,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M49,19L49,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M59,19L59,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M69,19L69,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M79,19L79,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+</vector>
+
+
+===== ARCHIVO: \app\src\main\res\drawable\ic_launcher_foreground.xml =====
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M31,63.928c0,0 6.4,-11 12.1,-13.1c7.2,-2.6 26,-1.4 26,-1.4l38.1,38.1L107,108.928l-32,-1L31,63.928z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:endX="85.84757"
+                android:endY="92.4963"
+                android:startX="42.9492"
+                android:startY="49.59793"
+                android:type="linear">
+                <item
+                    android:color="#44000000"
+                    android:offset="0.0" />
+                <item
+                    android:color="#00000000"
+                    android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="nonZero"
+        android:pathData="M65.3,45.828l3.8,-6.6c0.2,-0.4 0.1,-0.9 -0.3,-1.1c-0.4,-0.2 -0.9,-0.1 -1.1,0.3l-3.9,6.7c-6.3,-2.8 -13.4,-2.8 -19.7,0l-3.9,-6.7c-0.2,-0.4 -0.7,-0.5 -1.1,-0.3C38.8,38.328 38.7,38.828 38.9,39.228l3.8,6.6C36.2,49.428 31.7,56.028 31,63.928h46C76.3,56.028 71.8,49.428 65.3,45.828zM43.4,57.328c-0.8,0 -1.5,-0.5 -1.8,-1.2c-0.3,-0.7 -0.1,-1.5 0.4,-2.1c0.5,-0.5 1.4,-0.7 2.1,-0.4c0.7,0.3 1.2,1 1.2,1.8C45.3,56.528 44.5,57.328 43.4,57.328L43.4,57.328zM64.6,57.328c-0.8,0 -1.5,-0.5 -1.8,-1.2s-0.1,-1.5 0.4,-2.1c0.5,-0.5 1.4,-0.7 2.1,-0.4c0.7,0.3 1.2,1 1.2,1.8C66.5,56.528 65.6,57.328 64.6,57.328L64.6,57.328z"
+        android:strokeWidth="1"
+        android:strokeColor="#00000000" />
+</vector>
+
+===== ARCHIVO: \app\src\main\res\layout\activity_main.xml =====
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/tvDistancia"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="0.0 metros"
+            android:textSize="36sp" />
+
+        <TextView
+            android:id="@+id/tvUbicacion"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="UbicaciÃ³n actual: --" />
+
+        <EditText
+            android:id="@+id/etEstudiante"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Estudiante (nombre o cÃ³digo)"
+            android:inputType="text" />
+
+        <EditText
+            android:id="@+id/etPrecision"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="PrecisiÃ³n del movimiento (metros)"
+            android:inputType="numberDecimal"
+            android:text="1" />
+
+        <EditText
+            android:id="@+id/etSegundos"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Tiempo de actualizaciÃ³n (segundos)"
+            android:inputType="number"
+            android:text="1" />
+
+        <Button
+            android:id="@+id/btnIniciar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Iniciar recorrido" />
+
+        <Button
+            android:id="@+id/btnDetener"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Detener y guardar" />
+
+        <Button
+            android:id="@+id/btnReporte"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Ver reporte consolidado" />
+
+        <TextView
+            android:id="@+id/tvReporte"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textIsSelectable="true" />
+    </LinearLayout>
+</ScrollView>
+
+
+===== ARCHIVO: \app\src\main\res\mipmap-anydpi-v26\ic_launcher.xml =====
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
+
+===== ARCHIVO: \app\src\main\res\mipmap-anydpi-v26\ic_launcher_round.xml =====
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
+
+===== ARCHIVO: \app\src\main\res\values\colors.xml =====
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>
+
+===== ARCHIVO: \app\src\main\res\values\strings.xml =====
+<resources>
+    <string name="app_name">odometro_laboratorio</string>
+</resources>
+
+===== ARCHIVO: \app\src\main\res\values\themes.xml =====
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Base.Theme.Odometro_laboratorio" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Customize your light theme here. -->
+        <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
+    </style>
+
+    <style name="Theme.Odometro_laboratorio" parent="Base.Theme.Odometro_laboratorio" />
+</resources>
+
+===== ARCHIVO: \app\src\main\res\values-night\themes.xml =====
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Base.Theme.Odometro_laboratorio" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Customize your dark theme here. -->
+        <!-- <item name="colorPrimary">@color/my_dark_primary</item> -->
+    </style>
+</resources>
+
+===== ARCHIVO: \app\src\main\res\xml\backup_rules.xml =====
+<?xml version="1.0" encoding="utf-8"?><!--
+   Sample backup rules file; uncomment and customize as necessary.
+   See https://developer.android.com/guide/topics/data/autobackup
+   for details.
+   Note: This file is ignored for devices older than API 31
+   See https://developer.android.com/about/versions/12/backup-restore
+-->
+<full-backup-content>
+    <!--
+   <include domain="sharedpref" path="."/>
+   <exclude domain="sharedpref" path="device.xml"/>
+-->
+</full-backup-content>
+
+===== ARCHIVO: \app\src\main\res\xml\data_extraction_rules.xml =====
+<?xml version="1.0" encoding="utf-8"?><!--
+   Sample data extraction rules file; uncomment and customize as necessary.
+   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
+   for details.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- TODO: Use <include> and <exclude> to control what is backed up.
+        <include .../>
+        <exclude .../>
+        -->
+    </cloud-backup>
+    <!--
+    <device-transfer>
+        <include .../>
+        <exclude .../>
+    </device-transfer>
+    -->
+</data-extraction-rules>
+
+===== ARCHIVO: \app\src\main\AndroidManifest.xml =====
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Odometro_laboratorio">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service android:name=".OdometerService" android:exported="false" />
+    </application>
+
+</manifest>
+
+===== ARCHIVO: \app\src\test\java\com\hfad\odometro_laboratorio\ExampleUnitTest.java =====
+package com.hfad.odometro_laboratorio;
+
+import org.junit.Test;
+
+import static org.junit.Assert.*;
+
+/**
+ * Example local unit test, which will execute on the development machine (host).
+ *
+ * @see <a href="http://d.android.com/tools/testing">Testing documentation</a>
+ */
+public class ExampleUnitTest {
+    @Test
+    public void addition_isCorrect() {
+        assertEquals(4, 2 + 2);
+    }
+}
+
+===== ARCHIVO: \app\build.gradle.kts =====
+plugins {
+    alias(libs.plugins.android.application)
+}
+
+android {
+    namespace = "com.hfad.odometro_laboratorio"
+    compileSdk {
+        version = release(37)
+    }
+
+    defaultConfig {
+        applicationId = "com.hfad.odometro_laboratorio"
+        minSdk = 24
+        targetSdk = 37
+        versionCode = 1
+        versionName = "1.0"
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildTypes {
+        release {
+            optimization {
+                enable = false
+            }
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+}
+
+dependencies {
+    implementation(libs.activity.ktx)
+    implementation(libs.appcompat)
+    implementation(libs.constraintlayout)
+    implementation(libs.material)
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.espresso.core)
+    androidTestImplementation(libs.ext.junit)
+}
+
+===== ARCHIVO: \build.gradle.kts =====
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+plugins {
+    alias(libs.plugins.android.application) apply false
+}
+
+===== ARCHIVO: \settings.gradle.kts =====
+pluginManagement {
+    repositories {
+        google {
+            content {
+                includeGroupByRegex("com\\.android.*")
+                includeGroupByRegex("com\\.google.*")
+                includeGroupByRegex("androidx.*")
+            }
+        }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+plugins {
+    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "odometro_laboratorio"
+include(":app")
